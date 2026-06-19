@@ -344,9 +344,18 @@ export default function TrackerApp({
 
       if (!parsed.length) { flash("No valid rows found in CSV", "error"); return; }
 
-      const result = await api.importTasks(periodId, parsed);
-      setTasks((ts) => [...ts, ...result.tasks]);
-      flash(`Successfully imported ${result.count} tasks`, "success");
+      let replace = false;
+      if (tasks.length > 0) {
+        const choice = prompt(
+          `Found ${parsed.length} tasks in CSV.\nThis period already has ${tasks.length} tasks.\n\nType "replace" to remove existing tasks and import fresh, or "append" to add on top.\n\n(replace / append)`
+        );
+        if (!choice) { flash("Import cancelled"); return; }
+        replace = choice.trim().toLowerCase() === "replace";
+      }
+
+      const result = await api.importTasks(periodId, parsed, replace);
+      setTasks(replace ? result.tasks : (ts) => [...ts, ...result.tasks]);
+      flash(`Successfully imported ${result.count} tasks${replace ? " (replaced)" : " (appended)"}`, "success");
     } catch (e) {
       flash(`Import failed: ${(e as Error).message}`, "error");
     } finally {

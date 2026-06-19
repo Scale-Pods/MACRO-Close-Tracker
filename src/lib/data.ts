@@ -112,8 +112,15 @@ export async function getTasks(periodId: string): Promise<Task[]> {
   return data ?? [];
 }
 
-export async function bulkCreateTasks(rows: Array<Partial<Task> & { period_id: string; name: string }>): Promise<Task[]> {
+export async function bulkCreateTasks(
+  rows: Array<Partial<Task> & { period_id: string; name: string }>,
+  replace = false
+): Promise<Task[]> {
   if (!rows.length) return [];
+  if (replace) {
+    const { error: delErr } = await supabase.from("tasks").delete().eq("period_id", rows[0].period_id);
+    if (delErr) throw new Error(delErr.message);
+  }
   const inserts = rows.map((r, i) => ({
     period_id: r.period_id,
     type: r.type ?? "Close",

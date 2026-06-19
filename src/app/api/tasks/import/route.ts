@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-    const created = await bulkCreateTasks(rows);
+    const created = await bulkCreateTasks(rows, body.replace === true);
     return NextResponse.json({ count: created.length, tasks: created }, { status: 201 });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
