@@ -11,6 +11,7 @@ import GuideView from "@/components/GuideView";
 import DeptGuide from "@/components/DeptGuide";
 import Modal from "@/components/Modal";
 import ThemeToggle from "@/components/ThemeToggle";
+import MacroLogo from "@/components/MacroLogo";
 
 type View = "tracker" | "calendar" | "guide" | "dept";
 type Group = "week" | "cat" | "owner" | "type";
@@ -458,7 +459,7 @@ export default function TrackerApp({
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="sb-brand">
-          <div className="sb-logo">M</div>
+          <div className="sb-logo"><MacroLogo size={34} /></div>
           <div className="sb-brandtext">
             <div className="sb-eyebrow">MACRO Media</div>
             <div className="sb-name">Accounting &amp; Finance</div>
@@ -496,6 +497,23 @@ export default function TrackerApp({
         )}
 
         <div className="sb-foot">
+          <div className="sb-account">
+            {authEnabled ? (
+              <>
+                <UserButton />
+                <div className="sb-acctxt">
+                  <div className="sb-accname">{userName ?? "Account"}</div>
+                  <div className="sb-accrole">{role}{!canEdit ? " · view only" : ""}</div>
+                </div>
+              </>
+            ) : (
+              <div className="sb-acctxt">
+                <div className="sb-accname">Open mode</div>
+                <div className="sb-accrole">no sign-in</div>
+              </div>
+            )}
+            <ThemeToggle />
+          </div>
           <button className="sb-collapse" onClick={() => setNavRail((v) => !v)} title={navRail ? "Expand sidebar" : "Collapse sidebar"}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
             <span className="sb-label">Collapse</span>
@@ -519,22 +537,6 @@ export default function TrackerApp({
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
                 <input ref={searchRef} type="text" placeholder="Search tasks, notes, owners…  ( / )" value={q} onChange={(e) => setQ(e.target.value)} />
               </div>
-            )}
-            <ThemeToggle />
-            {!canEdit && (
-              <span className="chip is-na" title="Your account has view-only access">
-                <span className="dot" />View only
-              </span>
-            )}
-            {authEnabled && (
-              <>
-                {userName && (
-                  <span className="topuser">
-                    {userName}<span style={{ opacity: 0.6 }}> · {role}</span>
-                  </span>
-                )}
-                <UserButton />
-              </>
             )}
           </div>
         </header>
