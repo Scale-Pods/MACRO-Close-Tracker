@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import CalendarView from "@/components/CalendarView";
 import GuideView from "@/components/GuideView";
 import DeptGuide from "@/components/DeptGuide";
+import Modal from "@/components/Modal";
 
 type View = "tracker" | "calendar" | "guide" | "dept";
 type Group = "week" | "cat" | "owner" | "type";
@@ -50,6 +51,13 @@ export default function TrackerApp({
   const [busy, setBusy] = useState(false);
   const [importing, setImporting] = useState(false);
 
+  // Modal state
+  type ModalType = null | "newPeriod" | "rename" | "deletePeriod" | "resetPeriod" | "deleteTask" | "renameTask" | "importChoice";
+  const [modal, setModal] = useState<ModalType>(null);
+  const [modalInput, setModalInput] = useState("");
+  const [modalTarget, setModalTarget] = useState<string | null>(null);
+  const [pendingCsvData, setPendingCsvData] = useState<Record<string, unknown>[] | null>(null);
+
   const ownerName = useCallback(
     (id: string | null) => owners.find((o) => o.id === id)?.name ?? "(unassigned)",
     [owners]
@@ -79,22 +87,27 @@ export default function TrackerApp({
   );
 
   const removeTask = useCallback(
-    async (id: string) => {
+    (id: string) => {
       if (!canEdit) { flash("You have view-only access"); return; }
-      const t = tasks.find((x) => x.id === id);
-      if (!t || !confirm(`Delete task: "${t.name}"?`)) return;
-      const prev = tasks;
-      setTasks((ts) => ts.filter((x) => x.id !== id));
-      try {
-        await api.deleteTask(id);
-        flash("Task deleted");
-      } catch (e) {
-        setTasks(prev);
-        flash((e as Error).message);
-      }
+      setModalTarget(id);
+      setModal("deleteTask");
     },
-    [tasks, flash, canEdit]
+    [canEdit, flash]
   );
+
+  async function doDeleteTask() {
+    if (!modalTarget) return;
+    setModal(null);
+    const prev = tasks;
+    setTasks((ts) => ts.filter((x) => x.id !== modalTarget));
+    try {
+      await api.deleteTask(modalTarget);
+      flash("Task deleted", "success");
+    } catch (e) {
+      setTasks(prev);
+      flash((e as Error).message, "error");
+    }
+  }
 
   // ---------- period switching ----------
   async function switchPeriod(id: string) {
@@ -109,38 +122,38 @@ export default function TrackerApp({
     }
   }
 
-  async function newPeriod() {
-    const label = prompt('Name the new close period (e.g. "July 2026"):');
-    if (!label || !label.trim()) return;
+  async function doNewPeriod(label: string) {
+    if (!label.trim()) return;
+    setModal(null);
     setBusy(true);
     try {
       const p = await api.createPeriod(label.trim());
       setPeriods((ps) => [p, ...ps]);
       setPeriodId(p.id);
       setTasks(await api.listTasks(p.id));
-      flash("New period created");
+      flash("New period created", "success");
     } catch (e) {
-      flash((e as Error).message);
+      flash((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
   }
 
-  async function renamePeriod() {
-    if (!period) return;
-    const v = prompt("Rename period:", period.label);
-    if (!v || !v.trim()) return;
+  async function doRenamePeriod(label: string) {
+    if (!period || !label.trim()) return;
+    setModal(null);
     try {
-      await api.renamePeriod(period.id, v.trim());
-      setPeriods((ps) => ps.map((p) => (p.id === period.id ? { ...p, label: v.trim() } : p)));
+      await api.renamePeriod(period.id, label.trim());
+      setPeriods((ps) => ps.map((p) => (p.id === period.id ? { ...p, label: label.trim() } : p)));
+      flash("Period renamed", "success");
     } catch (e) {
-      flash((e as Error).message);
+      flash((e as Error).message, "error");
     }
   }
 
-  async function deletePeriod() {
+  async function doDeletePeriod() {
     if (!period) return;
-    if (!confirm(`Delete period "${period.label}" and all its tasks?`)) return;
+    setModal(null);
     setBusy(true);
     try {
       await api.deletePeriod(period.id);
@@ -149,24 +162,24 @@ export default function TrackerApp({
       const next = remaining[0]?.id ?? null;
       setPeriodId(next);
       setTasks(next ? await api.listTasks(next) : []);
-      flash("Period deleted");
+      flash("Period deleted", "success");
     } catch (e) {
-      flash((e as Error).message);
+      flash((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
   }
 
-  async function resetPeriod() {
+  async function doResetPeriod() {
     if (!period) return;
-    if (!confirm("Reset this period's tasks back to the template? Current statuses and notes will be cleared.")) return;
+    setModal(null);
     setBusy(true);
     try {
       await api.resetPeriod(period.id);
       setTasks(await api.listTasks(period.id));
-      flash("Period reset to template");
+      flash("Period reset to template", "success");
     } catch (e) {
-      flash((e as Error).message);
+      flash((e as Error).message, "error");
     } finally {
       setBusy(false);
     }
@@ -344,15 +357,29 @@ export default function TrackerApp({
 
       if (!parsed.length) { flash("No valid rows found in CSV", "error"); return; }
 
-      let replace = false;
       if (tasks.length > 0) {
-        const choice = prompt(
-          `Found ${parsed.length} tasks in CSV.\nThis period already has ${tasks.length} tasks.\n\nType "replace" to remove existing tasks and import fresh, or "append" to add on top.\n\n(replace / append)`
-        );
-        if (!choice) { flash("Import cancelled"); return; }
-        replace = choice.trim().toLowerCase() === "replace";
+        setPendingCsvData(parsed);
+        setModal("importChoice");
+        return;
       }
 
+      await doImport(parsed, false);
+    } catch (e) {
+      flash(`Import failed: ${(e as Error).message}`, "error");
+      setBusy(false);
+      setImporting(false);
+    } finally {
+      if (csvRef.current) csvRef.current.value = "";
+    }
+  }
+
+  async function doImport(parsed: Record<string, unknown>[], replace: boolean) {
+    if (!periodId) return;
+    setModal(null);
+    setBusy(true);
+    setImporting(true);
+    flash("Importing tasks...", "info");
+    try {
       const result = await api.importTasks(periodId, parsed, replace);
       setTasks(replace ? result.tasks : (ts) => [...ts, ...result.tasks]);
       flash(`Successfully imported ${result.count} tasks${replace ? " (replaced)" : " (appended)"}`, "success");
@@ -361,7 +388,7 @@ export default function TrackerApp({
     } finally {
       setBusy(false);
       setImporting(false);
-      if (csvRef.current) csvRef.current.value = "";
+      setPendingCsvData(null);
     }
   }
 
@@ -384,9 +411,9 @@ export default function TrackerApp({
                   <option key={p.id} value={p.id}>{p.label}</option>
                 ))}
               </select>
-              <button className="btn sm" onClick={newPeriod} disabled={busy || !canEdit}>+ New</button>
-              <button className="btn ghost sm" onClick={renamePeriod} disabled={!period || !canEdit}>Rename</button>
-              <button className="btn ghost sm" onClick={deletePeriod} disabled={!period || !canEdit}>Delete</button>
+              <button className="btn sm" onClick={() => { setModalInput(""); setModal("newPeriod"); }} disabled={busy || !canEdit}>+ New</button>
+              <button className="btn ghost sm" onClick={() => { setModalInput(period?.label ?? ""); setModal("rename"); }} disabled={!period || !canEdit}>Rename</button>
+              <button className="btn ghost sm" onClick={() => setModal("deletePeriod")} disabled={!period || !canEdit}>Delete</button>
             </>
           )}
           {!canEdit && (
@@ -526,6 +553,7 @@ export default function TrackerApp({
                           canEdit={canEdit}
                           onPatch={patchTask}
                           onDelete={removeTask}
+                          onRenameTask={(id, name) => { setModalTarget(id); setModalInput(name); setModal("renameTask"); }}
                         />
                       ))}
                     </div>
@@ -556,7 +584,7 @@ export default function TrackerApp({
 
           <div className="foot">
             <div>Changes save to the shared database automatically. Running on <strong>sample data</strong>.</div>
-            {canEdit && <div><button className="btn ghost sm" onClick={resetPeriod} disabled={!period}>Reset to template</button></div>}
+            {canEdit && <div><button className="btn ghost sm" onClick={() => setModal("resetPeriod")} disabled={!period}>Reset to template</button></div>}
           </div>
         </>
       )}
@@ -579,6 +607,77 @@ export default function TrackerApp({
       {view === "guide" && <GuideView />}
       {view === "dept" && <DeptGuide />}
 
+      {/* Modals */}
+      <Modal open={modal === "newPeriod"} title="New Close Period" onClose={() => setModal(null)} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => setModal(null)}>Cancel</button>
+          <button className="btn primary sm" onClick={() => doNewPeriod(modalInput)}>Create</button>
+        </>
+      }>
+        <p>Name the new close period:</p>
+        <input type="text" value={modalInput} onChange={(e) => setModalInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doNewPeriod(modalInput)} placeholder='e.g. "July 2026 Close"' autoFocus />
+      </Modal>
+
+      <Modal open={modal === "rename"} title="Rename Period" onClose={() => setModal(null)} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => setModal(null)}>Cancel</button>
+          <button className="btn primary sm" onClick={() => doRenamePeriod(modalInput)}>Save</button>
+        </>
+      }>
+        <input type="text" value={modalInput} onChange={(e) => setModalInput(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doRenamePeriod(modalInput)} autoFocus />
+      </Modal>
+
+      <Modal open={modal === "deletePeriod"} title="Delete Period" onClose={() => setModal(null)} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => setModal(null)}>Cancel</button>
+          <button className="btn sm" style={{ background: "#c0392b", color: "#fff" }} onClick={doDeletePeriod}>Delete</button>
+        </>
+      }>
+        <p>Delete <strong>{period?.label}</strong> and all its tasks? This cannot be undone.</p>
+      </Modal>
+
+      <Modal open={modal === "resetPeriod"} title="Reset Period" onClose={() => setModal(null)} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => setModal(null)}>Cancel</button>
+          <button className="btn sm" style={{ background: "#b8801c", color: "#fff" }} onClick={doResetPeriod}>Reset</button>
+        </>
+      }>
+        <p>Reset all tasks in <strong>{period?.label}</strong> back to the template? Current statuses and notes will be cleared.</p>
+      </Modal>
+
+      <Modal open={modal === "deleteTask"} title="Delete Task" onClose={() => setModal(null)} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => setModal(null)}>Cancel</button>
+          <button className="btn sm" style={{ background: "#c0392b", color: "#fff" }} onClick={doDeleteTask}>Delete</button>
+        </>
+      }>
+        <p>Delete task <strong>{tasks.find((t) => t.id === modalTarget)?.name}</strong>?</p>
+      </Modal>
+
+      <Modal open={modal === "renameTask"} title="Rename Task" onClose={() => setModal(null)} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => setModal(null)}>Cancel</button>
+          <button className="btn primary sm" onClick={() => { if (modalTarget && modalInput.trim()) { patchTask(modalTarget, { name: modalInput.trim() }); setModal(null); } }}>Save</button>
+        </>
+      }>
+        <input type="text" value={modalInput} onChange={(e) => setModalInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && modalTarget && modalInput.trim()) { patchTask(modalTarget, { name: modalInput.trim() }); setModal(null); } }} autoFocus />
+      </Modal>
+
+      <Modal open={modal === "importChoice"} title="Import CSV" onClose={() => { setModal(null); setPendingCsvData(null); setBusy(false); setImporting(false); }} actions={
+        <>
+          <button className="btn ghost sm" onClick={() => { setModal(null); setPendingCsvData(null); setBusy(false); setImporting(false); }}>Cancel</button>
+          <button className="btn sm" onClick={() => pendingCsvData && doImport(pendingCsvData, false)}>Append</button>
+          <button className="btn primary sm" onClick={() => pendingCsvData && doImport(pendingCsvData, true)}>Replace All</button>
+        </>
+      }>
+        <p>Found <strong>{pendingCsvData?.length ?? 0}</strong> tasks in the CSV file.</p>
+        <p>This period already has <strong>{tasks.length}</strong> tasks.</p>
+        <p style={{ marginTop: 8 }}>
+          <strong>Append</strong> adds the new tasks alongside existing ones.<br />
+          <strong>Replace All</strong> removes existing tasks and imports fresh.
+        </p>
+      </Modal>
+
       <div className={`toast ${toast ? "show" : ""}`} style={toastType === "success" ? { background: "#2a7a4b" } : toastType === "error" ? { background: "#c0392b" } : undefined}>{toast}</div>
     </div>
   );
@@ -586,7 +685,7 @@ export default function TrackerApp({
 
 // ---------- Row ----------
 function TaskRow({
-  task, owners, categories, canEdit, onPatch, onDelete,
+  task, owners, categories, canEdit, onPatch, onDelete, onRenameTask,
 }: {
   task: Task;
   owners: Owner[];
@@ -594,6 +693,7 @@ function TaskRow({
   canEdit: boolean;
   onPatch: (id: string, patch: Partial<Task>) => void;
   onDelete: (id: string) => void;
+  onRenameTask: (id: string, currentName: string) => void;
 }) {
   const sc = STATUS_CLASS[task.status];
   const tyClass = task.type === "Close Adjacent" ? "adj" : "close";
@@ -613,8 +713,7 @@ function TaskRow({
           title={canEdit ? "Double-click to rename" : undefined}
           onDoubleClick={() => {
             if (!canEdit) return;
-            const v = prompt("Rename task:", task.name);
-            if (v && v.trim()) onPatch(task.id, { name: v.trim() });
+            onRenameTask(task.id, task.name);
           }}
         >
           {task.name}
